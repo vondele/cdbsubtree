@@ -2,6 +2,8 @@
 
 count the number of positions reachable from a specific fen (at a specific depth) in a cdb data dump.
 
+for `1. g4`:
+
 ```
 Exploring fen: rnbqkbnr/pppppppp/8/8/6P1/8/PPPPPP1P/RNBQKBNR b KQkq - 0 1
 Max depth: 20
@@ -37,6 +39,38 @@ Detailed stats:
   18 :     55847130    450106086
   19 :     59516674    509622760
   20 :     62880125    572502885
+```
+
+for `1. e4`:
+```
+Exploring fen: rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1
+Max depth: 14
+Opening DB
+sequential prepare
+Reserving map of size 1073741824
+Exploring tree
+Done!
+  Total number of DB gets: 3607845267
+  Duration (sec) 6084.23
+  DB gets per second: 592982
+Number of cdb positions reachable from fen: 1779890740
+Detailed stats:
+ply           count  cumulative
+   0 :            1            1
+   1 :           20           21
+   2 :          600          621
+   3 :         8062         8683
+   4 :       142005       150688
+   5 :       865620      1016308
+   6 :      4120597      5136905
+   7 :     13041195     18178100
+   8 :     33268259     51446359
+   9 :     70469664    121916023
+  10 :    129981739    251897762
+  11 :    210995621    462893383
+  12 :    314935228    777828611
+  13 :    435087217   1212915828
+  14 :    566974912   1779890740
 ```
 
 This tool requires a working instance of `cdbdirect`. See the
