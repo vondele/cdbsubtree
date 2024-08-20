@@ -119,12 +119,14 @@ void explore(Board &board, int depth, std::uintptr_t handle,
 
 int main() {
   std::string fen;
-  // 1. e4
-  fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1";
   // 1. g4
   fen = "rnbqkbnr/pppppppp/8/8/6P1/8/PPPPPP1P/RNBQKBNR b KQkq - 0 1";
+  // 1. e4
+  fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1";
+  // 1. c3
+  fen = "rnbqkbnr/pppppppp/8/8/8/1P6/P1PPPPPP/RNBQKBNR b KQkq - 0 1";
 
-  int depth = 8;
+  int depth = 14;
 
   std::cout << "Exploring fen: " << fen << std::endl;
   std::cout << "Max depth: " << depth << std::endl;
