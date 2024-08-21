@@ -65,8 +65,9 @@ void explore(Board &board, int depth, std::uintptr_t handle,
   std::uint64_t key = board.hash();
 
   // quick exist if this has already been explored at equal or higher depth
-  auto it = visited_keys.find(key);
-  if (it != visited_keys.end() && it->second>=depth)
+  int found_depth = -1;
+  visited_keys.if_contains(key,[&found_depth](zobrist_map_t::value_type &p) { found_depth = p.second; });
+  if (found_depth >= depth)
      return;
 
   // probe DB
@@ -119,14 +120,14 @@ void explore(Board &board, int depth, std::uintptr_t handle,
 
 int main() {
   std::string fen;
-  // 1. g4
-  fen = "rnbqkbnr/pppppppp/8/8/6P1/8/PPPPPP1P/RNBQKBNR b KQkq - 0 1";
   // 1. e4
   fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1";
-  // 1. c3
+  // 1. b3
   fen = "rnbqkbnr/pppppppp/8/8/8/1P6/P1PPPPPP/RNBQKBNR b KQkq - 0 1";
+  // 1. g4
+  fen = "rnbqkbnr/pppppppp/8/8/6P1/8/PPPPPP1P/RNBQKBNR b KQkq - 0 1";
 
-  int depth = 14;
+  int depth = 8;
 
   std::cout << "Exploring fen: " << fen << std::endl;
   std::cout << "Max depth: " << depth << std::endl;
@@ -159,11 +160,14 @@ int main() {
             });
 
   // The big one...
-  size_t map_reserve_size = 1024 * size_t(1024 * 1024);
+  // The memory size allocated is actually roughly 2 * map_reserve_size, and can be 87.5% occupied
+  size_t map_reserve_size = 3 * 1024 * size_t(1024 * 1024);
   std::cout << "Reserving map of size " << map_reserve_size << std::endl;
 
   zobrist_map_t visited_keys;
   visited_keys.reserve(map_reserve_size);
+  std::cout << "Bucket count: " << visited_keys.bucket_count() << std::endl;
+  std::cout << "Estimated memory use: " << visited_keys.bucket_count() * (sizeof(zobrist_map_t::value_type) + 1) << std::endl;
 
   // Start exploring.
   std::cout << "Exploring tree" << std::endl;

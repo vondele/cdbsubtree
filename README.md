@@ -6,18 +6,20 @@ for `1. g4`:
 
 ```
 Exploring fen: rnbqkbnr/pppppppp/8/8/6P1/8/PPPPPP1P/RNBQKBNR b KQkq - 0 1
-Max depth: 20
+Max depth: 40
 Opening DB
 sequential prepare
-Reserving map of size 1073741824
+Reserving map of size 3221225472
+Bucket count: 4294967040
+Estimated memory use: 73014439680
 Exploring tree
 Done!
-  Total number of DB gets: 2322436826
-  Duration (sec) 3274.51
-  DB gets per second: 709247
-Number of cdb positions reachable from fen: 572502885
+  Total number of DB gets: 22506118976
+  Duration (sec) 27240.3
+  DB gets per second: 826207
+Number of cdb positions reachable from fen: 2572711175
 Detailed stats:
- ply           count  cumulative
+ply           count  cumulative
    0 :            1            1
    1 :           20           21
    2 :          421          442
@@ -39,6 +41,26 @@ Detailed stats:
   18 :     55847130    450106086
   19 :     59516674    509622760
   20 :     62880125    572502885
+  21 :     67325555    639828440
+  22 :     71182001    711010441
+  23 :     75569266    786579707
+  24 :     78899369    865479076
+  25 :     82071557    947550633
+  26 :     84634885   1032185518
+  27 :     86851692   1119037210
+  28 :     89374628   1208411838
+  29 :     93165035   1301576873
+  30 :     96620357   1398197230
+  31 :    100390202   1498587432
+  32 :    104255033   1602842465
+  33 :    108224128   1711066593
+  34 :    112555174   1823621767
+  35 :    116175032   1939796799
+  36 :    119932966   2059729765
+  37 :    119713945   2179443710
+  38 :    123601223   2303044933
+  39 :    130548826   2433593759
+  40 :    139117416   2572711175
 ```
 
 for `1. e4`:
