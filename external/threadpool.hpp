@@ -14,16 +14,19 @@ class ThreadPool {
     }
 
     template <class F, class... Args>
-    void enqueue(F &&func, Args &&...args) {
+    size_t enqueue(F &&func, Args &&...args) {
         auto task = std::make_shared<std::packaged_task<void()>>(
             std::bind(std::forward<F>(func), std::forward<Args>(args)...));
 
+        size_t size;
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
             if (stop_) throw std::runtime_error("Warning: enqueue on stopped ThreadPool");
             tasks_.emplace([task]() { (*task)(); });
+            size = tasks_.size();
         }
         condition_.notify_one();
+        return size;
     }
 
     ~ThreadPool() { wait(); }
