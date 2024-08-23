@@ -192,15 +192,22 @@ void explore(Board &board, int depth, bool allow_progress,
         explore(board, depth - 1, allow_progress, handle, total_gets,
                 visited_keys, fens_todo);
       } else {
-        PackedBoard pbfen = Board::Compact::encode(board);
-        fens_todo[pI_2]->lazy_emplace_l(
-            std::move(pbfen),
-            [&pbfen, &depth](fen_map_t::value_type &p) {
-              p.second = std::max(p.second, std::int16_t(depth - 1));
-            },
-            [&pbfen, &depth](const fen_map_t::constructor &ctor) {
-              ctor(std::move(pbfen), depth - 1);
-            });
+        // probe DB: don't add to the todos if it is not in the DB
+        // saves significant memory, but slows down at low depth.
+        std::vector<std::pair<std::string, int>> resultNext =
+            cdbdirect_get(handle, board.getFen(false));
+        total_gets++;
+        if (resultNext[resultNext.size() - 1].second != -2) {
+          PackedBoard pbfen = Board::Compact::encode(board);
+          fens_todo[pI_2]->lazy_emplace_l(
+              std::move(pbfen),
+              [&pbfen, &depth](fen_map_t::value_type &p) {
+                p.second = std::max(p.second, std::int16_t(depth - 1));
+              },
+              [&pbfen, &depth](const fen_map_t::constructor &ctor) {
+                ctor(std::move(pbfen), depth - 1);
+              });
+        }
       }
       board.unmakeMove(m);
     }
@@ -217,7 +224,7 @@ int main() {
   // 1. g4
   fen = "rnbqkbnr/pppppppp/8/8/6P1/8/PPPPPP1P/RNBQKBNR b KQkq - 0 1";
 
-  int depth = 14;
+  int depth = 20;
 
   bool allow_progress = false;
 
