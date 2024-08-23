@@ -6,6 +6,7 @@
 #include <iostream>
 #include <map>
 #include <mutex>
+#include <string_view>
 #include <unistd.h>
 
 #include "external/chess.hpp"
@@ -16,19 +17,31 @@
 
 using namespace chess;
 
+using PackedBoard = std::array<std::uint8_t, 24>;
+
+namespace std {
+template <> struct hash<PackedBoard> {
+  size_t operator()(const PackedBoard pbfen) const {
+    std::string_view sv(reinterpret_cast<const char *>(pbfen.data()),
+                        pbfen.size());
+    return std::hash<std::string_view>{}(sv);
+  }
+};
+} // namespace std
+
 using zobrist_map_t = phmap::parallel_flat_hash_map<
     std::uint64_t, std::int16_t, std::hash<std::uint64_t>,
     std::equal_to<std::uint64_t>,
     std::allocator<std::pair<std::uint64_t, std::int16_t>>, 8, std::mutex>;
 
 using fen_map_t = phmap::parallel_flat_hash_map<
-    std::string, std::int16_t, std::hash<std::string>,
-    std::equal_to<std::string>,
-    std::allocator<std::pair<std::string, std::int16_t>>, 8, std::mutex>;
+    PackedBoard, std::int16_t, std::hash<PackedBoard>,
+    std::equal_to<PackedBoard>,
+    std::allocator<std::pair<PackedBoard, std::int16_t>>, 8, std::mutex>;
 
 using fens_todo_t = std::array<fen_map_t *, 3007>;
 
-using poslist_t = std::map<std::string, int>;
+using poslist_t = std::map<PackedBoard, int>;
 
 // get memory in MB
 std::pair<size_t, size_t> get_memory() {
@@ -78,8 +91,8 @@ void collect(Board &board, int depth, bool allow_progress,
              std::uintptr_t handle, std::atomic<size_t> &total_gets,
              poslist_t &poslist) {
 
-  std::string fen = board.getFen(false);
-  std::vector<std::pair<std::string, int>> result = cdbdirect_get(handle, fen);
+  std::vector<std::pair<std::string, int>> result =
+      cdbdirect_get(handle, board.getFen(false));
   total_gets++;
   size_t n_elements = result.size();
   int ply = result[n_elements - 1].second;
@@ -88,11 +101,12 @@ void collect(Board &board, int depth, bool allow_progress,
   if (ply == -2)
     return;
 
-  if (poslist.contains(fen)) {
-    if (poslist[fen] < depth)
-      poslist[fen] = depth;
+  PackedBoard pbfen = Board::Compact::encode(board);
+  if (poslist.contains(pbfen)) {
+    if (poslist[pbfen] < depth)
+      poslist[pbfen] = depth;
   } else {
-    poslist[fen] = depth;
+    poslist[pbfen] = depth;
   }
 
   // No remaining depth
@@ -132,8 +146,8 @@ void explore(Board &board, int depth, bool allow_progress,
     return;
 
   // probe DB
-  std::string fen = board.getFen(false);
-  std::vector<std::pair<std::string, int>> result = cdbdirect_get(handle, fen);
+  std::vector<std::pair<std::string, int>> result =
+      cdbdirect_get(handle, board.getFen(false));
   total_gets++;
   size_t n_elements = result.size();
   int ply = result[n_elements - 1].second;
@@ -178,14 +192,14 @@ void explore(Board &board, int depth, bool allow_progress,
         explore(board, depth - 1, allow_progress, handle, total_gets,
                 visited_keys, fens_todo);
       } else {
-        std::string fen = board.getFen(false);
+        PackedBoard pbfen = Board::Compact::encode(board);
         fens_todo[pI_2]->lazy_emplace_l(
-            std::move(fen),
-            [&fen, &depth](fen_map_t::value_type &p) {
+            std::move(pbfen),
+            [&pbfen, &depth](fen_map_t::value_type &p) {
               p.second = std::max(p.second, std::int16_t(depth - 1));
             },
-            [&fen, &depth](const fen_map_t::constructor &ctor) {
-              ctor(std::move(fen), depth - 1);
+            [&pbfen, &depth](const fen_map_t::constructor &ctor) {
+              ctor(std::move(pbfen), depth - 1);
             });
       }
       board.unmakeMove(m);
@@ -203,7 +217,7 @@ int main() {
   // 1. g4
   fen = "rnbqkbnr/pppppppp/8/8/6P1/8/PPPPPP1P/RNBQKBNR b KQkq - 0 1";
 
-  int depth = 10;
+  int depth = 14;
 
   bool allow_progress = false;
 
@@ -238,8 +252,8 @@ int main() {
       collect(board, edepth, allow_progress, handle, total_gets, poslist);
     }
 
-    for (const auto &[fen, fendepth] : poslist)
-      (*fens_todo[pI_orig])[fen] = depth - edepth + fendepth;
+    for (const auto &[pbfen, fendepth] : poslist)
+      (*fens_todo[pI_orig])[pbfen] = depth - edepth + fendepth;
   }
 
   // Start exploring.
@@ -285,28 +299,28 @@ int main() {
         auto t_start = std::chrono::high_resolution_clock::now();
 
         // sort with the low depths first, more efficient, but also more memory
-        std::vector<std::pair<std::string, std::int16_t>> todos;
+        std::vector<std::pair<PackedBoard, std::int16_t>> todos;
         for (auto itr = fens_ongoing.begin(); itr != fens_ongoing.end(); ++itr)
           todos.push_back(*itr);
         fens_ongoing.clear();
 
         std::sort(todos.begin(), todos.end(),
-                  [](std::pair<std::string, std::int16_t> &a,
-                     std::pair<std::string, std::int16_t> &b) {
+                  [](std::pair<PackedBoard, std::int16_t> &a,
+                     std::pair<PackedBoard, std::int16_t> &b) {
                     return a.second < b.second;
                   });
 
         ThreadPool pool(std::thread::hardware_concurrency());
 
-        for (const auto &[fen, fendepth] : todos) {
+        for (const auto &[pbfen, fendepth] : todos) {
           size_t size = pool.enqueue(
               [&allow_progress, &handle, &iter_gets, &visited_keys,
-               &fens_todo](std::string fen, int depth) {
-                Board board(fen);
+               &fens_todo](PackedBoard pbfen, int depth) {
+                Board board = Board::Compact::decode(pbfen);
                 explore(board, depth, allow_progress, handle, iter_gets,
                         visited_keys, fens_todo);
               },
-              fen, fendepth);
+              pbfen, fendepth);
           // limit the size of the queue in the pool, no need to have it very
           // long if (size >= 5000 * std::thread::hardware_concurrency())
           // {
@@ -372,9 +386,10 @@ int main() {
         }
 
         // Prepare for next iter
-        delete fens_todo[pI_now];
         visited_keys.clear();
       }
+      // Done with this map
+      delete fens_todo[pI_now];
     }
   }
 
