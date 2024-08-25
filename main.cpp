@@ -76,6 +76,16 @@ std::string getCurrentDateTime() {
   return dateTimeStream.str();
 }
 
+struct Stats {
+  std::atomic<size_t> gets;
+  std::atomic<size_t> hits;
+  std::atomic<size_t> visited;
+
+  void clear() {
+      gets = hits = visited = 0;
+  }
+}
+
 // returns an index that signifies progress during a chess game,
 // this index will never increase during a game.
 // it ranges from 3006 to 0.
@@ -109,18 +119,20 @@ size_t progressIndex(const Board &board) {
 // collect brute force all fens reachable up to a given depth, useful for a
 // quick precompute?
 void collect(Board &board, int depth, bool allow_progress,
-             std::uintptr_t handle, std::atomic<size_t> &total_gets,
+             std::uintptr_t handle, Stats &stats,
              poslist_t &poslist) {
 
   std::vector<std::pair<std::string, int>> result =
       cdbdirect_get(handle, board.getFen(false));
-  total_gets++;
+  stats.gets++;
   size_t n_elements = result.size();
   int ply = result[n_elements - 1].second;
 
   // not in DB
   if (ply == -2)
     return;
+
+  stats.hits++;
 
   PackedBoard pbfen = Board::Compact::encode(board);
   if (poslist.contains(pbfen)) {
@@ -145,7 +157,7 @@ void collect(Board &board, int depth, bool allow_progress,
       board.makeMove<true>(m);
       size_t pI_2 = progressIndex(board);
       if (pI_1 == pI_2 || allow_progress) {
-        collect(board, depth - 1, allow_progress, handle, total_gets, poslist);
+        collect(board, depth - 1, allow_progress, handle, stats, poslist);
       }
       board.unmakeMove(m);
     }
@@ -153,7 +165,7 @@ void collect(Board &board, int depth, bool allow_progress,
 
 // main function, generates a map of all visited keys with their maximum depth
 void explore(Board &board, int depth, bool allow_progress,
-             std::uintptr_t handle, std::atomic<size_t> &total_gets,
+             std::uintptr_t handle, Stats &stats,
              zobrist_map_t &visited_keys, fens_todo_t &fens_todo) {
 
   std::uint64_t key = board.hash();
@@ -169,13 +181,15 @@ void explore(Board &board, int depth, bool allow_progress,
   // probe DB
   std::vector<std::pair<std::string, int>> result =
       cdbdirect_get(handle, board.getFen(false));
-  total_gets++;
+  stats.gets++;
   size_t n_elements = result.size();
   int ply = result[n_elements - 1].second;
 
   // not in DB
   if (ply == -2)
     return;
+
+  stats.hits++;
 
   // In DB, add to map
   std::int16_t value;
@@ -210,15 +224,16 @@ void explore(Board &board, int depth, bool allow_progress,
       board.makeMove<true>(m);
       size_t pI_2 = progressIndex(board);
       if (pI_1 == pI_2 || allow_progress) {
-        explore(board, depth - 1, allow_progress, handle, total_gets,
+        explore(board, depth - 1, allow_progress, handle, stats,
                 visited_keys, fens_todo);
       } else {
         // probe DB: don't add to the todos if it is not in the DB
         // saves significant memory, but slows down at low depth.
         std::vector<std::pair<std::string, int>> resultNext =
             cdbdirect_get(handle, board.getFen(false));
-        total_gets++;
+        stats.gets++;
         if (resultNext[resultNext.size() - 1].second != -2) {
+          stats.hits++;
           PackedBoard pbfen = Board::Compact::encode(board);
           fens_todo[pI_2]->lazy_emplace_l(
               std::move(pbfen),
@@ -257,7 +272,7 @@ int main() {
   std::uintptr_t handle = cdbdirect_initialize("/mnt/ssd/chess-20240814/data");
 
   // counters
-  std::atomic<size_t> total_gets = 0;
+  Stats stats;
   Board board(fen);
 
   std::cout << "sequential prepare" << std::endl;
@@ -271,13 +286,14 @@ int main() {
   size_t pI_orig = progressIndex(board);
 
   // sequential prepare, generate enough fens in the tree to parallelize
+  stats.clear();
   {
     poslist_t poslist;
     int edepth = -1;
     while (poslist.size() <= 10 * std::thread::hardware_concurrency() &&
            edepth <= depth) {
       edepth++;
-      collect(board, edepth, allow_progress, handle, total_gets, poslist);
+      collect(board, edepth, allow_progress, handle, stats, poslist);
     }
 
     for (const auto &[pbfen, fendepth] : poslist)
@@ -291,8 +307,10 @@ int main() {
   std::cout << "    starting memory virt : " << std::setw(18) << mem_virt
             << " res :" << std::setw(18) << mem_res << std::endl;
 
-  std::vector<size_t> total_counts(depth + 1, 0);
   size_t total_visited = 0;
+  size_t total_gets = 0;
+  size_t total_hits = 0;
+  std::vector<size_t> total_counts(depth + 1, 0);
 
   auto total_t_start = std::chrono::high_resolution_clock::now();
 
@@ -305,7 +323,8 @@ int main() {
 
       if (fens_ongoing.size() > 0) {
 
-        std::atomic<size_t> iter_gets = 0;
+        stats.clear();
+
         std::vector<size_t> iter_counts(depth + 1, 0);
 
         iter++;
@@ -345,10 +364,10 @@ int main() {
 
         for (const auto &[pbfen, fendepth] : todos) {
           size_t size = pool.enqueue(
-              [&allow_progress, &handle, &iter_gets, &visited_keys,
+              [&allow_progress, &handle, &stats, &visited_keys,
                &fens_todo](PackedBoard pbfen, int depth) {
                 Board board = Board::Compact::decode(pbfen);
-                explore(board, depth, allow_progress, handle, iter_gets,
+                explore(board, depth, allow_progress, handle, stats,
                         visited_keys, fens_todo);
               },
               pbfen, fendepth);
