@@ -251,6 +251,7 @@ int main() {
 
   std::cout << "Exploring fen: " << fen << std::endl;
   std::cout << "Max depth: " << depth << std::endl;
+  std::cout << "Patience... " << std::endl;
 
   std::cout << "Opening DB" << std::endl;
   std::uintptr_t handle = cdbdirect_initialize("/mnt/ssd/chess-20240814/data");
