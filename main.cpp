@@ -1,11 +1,13 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <ctime>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <map>
 #include <mutex>
+#include <sstream>
 #include <string_view>
 #include <unistd.h>
 
@@ -54,6 +56,25 @@ std::pair<size_t, size_t> get_memory() {
   return std::make_pair(tSize * page_size / (1024 * 1024),
                         resident * page_size / (1024 * 1024));
 };
+
+// local data and time
+std::string getCurrentDateTime() {
+  // Get current time
+  std::time_t now = std::time(nullptr);
+
+  // Convert it to local time structure
+  std::tm *localTime = std::localtime(&now);
+
+  // Create a stringstream to format the date and time
+  std::ostringstream dateTimeStream;
+  dateTimeStream << (1900 + localTime->tm_year) << "-"
+                 << (localTime->tm_mon + 1) << "-" << localTime->tm_mday << " "
+                 << localTime->tm_hour << ":" << localTime->tm_min << ":"
+                 << localTime->tm_sec;
+
+  // Convert to string and return
+  return dateTimeStream.str();
+}
 
 // returns an index that signifies progress during a chess game,
 // this index will never increase during a game.
@@ -224,13 +245,12 @@ int main() {
   // 1. g4
   fen = "rnbqkbnr/pppppppp/8/8/6P1/8/PPPPPP1P/RNBQKBNR b KQkq - 0 1";
 
-  int depth = 20;
+  int depth = 8;
 
   bool allow_progress = false;
 
   std::cout << "Exploring fen: " << fen << std::endl;
   std::cout << "Max depth: " << depth << std::endl;
-  std::cout << "Allowing captures: " << allow_progress << std::endl;
 
   std::cout << "Opening DB" << std::endl;
   std::uintptr_t handle = cdbdirect_initialize("/mnt/ssd/chess-20240814/data");
@@ -265,6 +285,10 @@ int main() {
 
   // Start exploring.
   std::cout << "Exploring tree" << std::endl;
+  std::cout << "    starting on: " << getCurrentDateTime() << std::endl;
+  auto [mem_virt, mem_res] = get_memory();
+  std::cout << "    starting memory virt : " << std::setw(18) << mem_virt
+            << " res :" << std::setw(18) << mem_res << std::endl;
 
   std::vector<size_t> total_counts(depth + 1, 0);
   size_t total_visited = 0;
@@ -292,16 +316,15 @@ int main() {
 
         size_t pieces_count = pieceProgress + 2;
 
-        auto [mem_virt, mem_res] = get_memory();
-
         std::cout << "Iteration : " << std::setw(4) << iter << " starting from "
-                  << std::setw(18) << fens_ongoing.size() << " fens with "
-                  << std::setw(2) << pieces_count << " pieces" << std::endl;
+                  << std::setw(18) << fens_ongoing.size() << " fens"
+                  << std::endl;
+        std::cout << "                 with pieces" << std::setw(4)
+                  << pieces_count << " pawn progress" << std::setw(4)
+                  << pawnProgress << " progress index" << std::setw(5) << pI_now
+                  << std::endl;
         std::cout << "                 pending fens: " << std::setw(18)
                   << total_pending << std::endl;
-        std::cout << "                 memory virt : " << std::setw(18)
-                  << mem_virt << " res :" << std::setw(18) << mem_res
-                  << std::endl;
 
         auto t_start = std::chrono::high_resolution_clock::now();
 
@@ -354,6 +377,12 @@ int main() {
         total_visited += iter_visited;
 
         // Debrief
+        std::cout << "                 iteration ended : "
+                  << getCurrentDateTime() << std::endl;
+        std::tie(mem_virt, mem_res) = get_memory();
+        std::cout << "                 memory virt : " << std::setw(18)
+                  << mem_virt << " res :" << std::setw(18) << mem_res
+                  << std::endl;
         std::cout << std::setw(4) << "  " << std::setw(18) << "iter time"
                   << std::setw(18) << "iter count" << std::setw(18)
                   << "total time" << std::setw(18) << "total count"
