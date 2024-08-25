@@ -110,9 +110,8 @@ size_t progressIndex(const Board &board) {
 }
 
 // main function, generates a map of all visited keys with their maximum depth
-void explore(Board &board, int depth, bool allow_progress,
-             std::uintptr_t handle, Stats &stats, fen_map_t &visited_keys,
-             fens_todo_t &fens_todo) {
+void explore(Board &board, int depth, std::uintptr_t handle, Stats &stats,
+             fen_map_t &visited_keys, fens_todo_t &fens_todo) {
 
   stats.nodes++;
   auto key = Board::Compact::encode(board);
@@ -170,9 +169,8 @@ void explore(Board &board, int depth, bool allow_progress,
       Move m = uci::uciToMove(board, pair.first);
       board.makeMove<true>(m);
       size_t pI_2 = progressIndex(board);
-      if (pI_1 == pI_2 || allow_progress) {
-        explore(board, depth - 1, allow_progress, handle, stats, visited_keys,
-                fens_todo);
+      if (pI_1 == pI_2) {
+        explore(board, depth - 1, handle, stats, visited_keys, fens_todo);
       } else {
         // probe DB: don't add to the todos if it is not in the DB
         // saves significant memory, but slows down at low depth.
@@ -212,8 +210,6 @@ int main() {
   fen = "rnbqkbnr/pppppppp/8/8/6P1/8/PPPPPP1P/RNBQKBNR b KQkq - 0 1";
 
   int depth = 20;
-
-  bool allow_progress = false;
 
   std::cout << "Exploring fen: " << fen << std::endl;
   std::cout << "Max depth: " << depth << std::endl;
@@ -311,11 +307,10 @@ int main() {
 
         for (const auto &[pbfen, fendepth] : todos) {
           size_t size = pool.enqueue(
-              [&allow_progress, &handle, &stats, &visited_keys,
-               &fens_todo](PackedBoard pbfen, int depth) {
+              [&handle, &stats, &visited_keys, &fens_todo](PackedBoard pbfen,
+                                                           int depth) {
                 Board board = Board::Compact::decode(pbfen);
-                explore(board, depth, allow_progress, handle, stats,
-                        visited_keys, fens_todo);
+                explore(board, depth, handle, stats, visited_keys, fens_todo);
               },
               pbfen, fendepth);
           // limit the size of the queue in the pool, no need to have it very
