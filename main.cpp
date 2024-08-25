@@ -31,11 +31,6 @@ template <> struct hash<PackedBoard> {
 };
 } // namespace std
 
-using zobrist_map_t = phmap::parallel_flat_hash_map<
-    std::uint64_t, std::int16_t, std::hash<std::uint64_t>,
-    std::equal_to<std::uint64_t>,
-    std::allocator<std::pair<std::uint64_t, std::int16_t>>, 8, std::mutex>;
-
 using fen_map_t = phmap::parallel_flat_hash_map<
     PackedBoard, std::int16_t, std::hash<PackedBoard>,
     std::equal_to<PackedBoard>,
@@ -163,15 +158,15 @@ void collect(Board &board, int depth, bool allow_progress,
 
 // main function, generates a map of all visited keys with their maximum depth
 void explore(Board &board, int depth, bool allow_progress,
-             std::uintptr_t handle, Stats &stats, zobrist_map_t &visited_keys,
+             std::uintptr_t handle, Stats &stats, fen_map_t &visited_keys,
              fens_todo_t &fens_todo) {
 
   stats.nodes++;
-  std::uint64_t key = board.hash();
+  auto key = Board::Compact::encode(board);
 
   // quick exist if this has already been explored at equal or higher depth
   int found_depth = -1;
-  visited_keys.if_contains(key, [&found_depth](zobrist_map_t::value_type &p) {
+  visited_keys.if_contains(key, [&found_depth](fen_map_t::value_type &p) {
     found_depth = p.second;
   });
   if (found_depth >= depth)
@@ -194,11 +189,11 @@ void explore(Board &board, int depth, bool allow_progress,
   std::int16_t value;
   bool is_new_entry = visited_keys.lazy_emplace_l(
       std::move(key),
-      [&](zobrist_map_t::value_type &p) {
+      [&](fen_map_t::value_type &p) {
         value = p.second;
         p.second = std::max(p.second, std::int16_t(depth));
       },
-      [&](const zobrist_map_t::constructor &ctor) {
+      [&](const fen_map_t::constructor &ctor) {
         ctor(std::move(key), depth);
         value = std::int16_t(depth - 1);
       });
@@ -276,7 +271,7 @@ int main() {
 
   std::cout << "sequential prepare" << std::endl;
 
-  zobrist_map_t visited_keys;
+  fen_map_t visited_keys;
 
   fens_todo_t fens_todo;
   for (auto &fp : fens_todo)
