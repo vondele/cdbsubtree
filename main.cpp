@@ -109,53 +109,6 @@ size_t progressIndex(const Board &board) {
   return (nPieces - 2) * 97 + pawnProgress;
 }
 
-// collect brute force all fens reachable up to a given depth, useful for a
-// quick precompute?
-void collect(Board &board, int depth, bool allow_progress,
-             std::uintptr_t handle, Stats &stats, poslist_t &poslist) {
-
-  stats.nodes++;
-  std::vector<std::pair<std::string, int>> result =
-      cdbdirect_get(handle, board.getFen(false));
-  stats.gets++;
-  size_t n_elements = result.size();
-  int ply = result[n_elements - 1].second;
-
-  // not in DB
-  if (ply == -2)
-    return;
-
-  stats.hits++;
-
-  PackedBoard pbfen = Board::Compact::encode(board);
-  if (poslist.contains(pbfen)) {
-    if (poslist[pbfen] < depth)
-      poslist[pbfen] = depth;
-  } else {
-    poslist[pbfen] = depth;
-  }
-
-  // No remaining depth
-  if (depth <= 0)
-    return;
-
-  // No moves to explore
-  if (n_elements <= 1)
-    return;
-
-  size_t pI_1 = progressIndex(board);
-  for (auto &pair : result)
-    if (pair.first != "a0a0") {
-      Move m = uci::uciToMove(board, pair.first);
-      board.makeMove<true>(m);
-      size_t pI_2 = progressIndex(board);
-      if (pI_1 == pI_2 || allow_progress) {
-        collect(board, depth - 1, allow_progress, handle, stats, poslist);
-      }
-      board.unmakeMove(m);
-    }
-}
-
 // main function, generates a map of all visited keys with their maximum depth
 void explore(Board &board, int depth, bool allow_progress,
              std::uintptr_t handle, Stats &stats, fen_map_t &visited_keys,
@@ -247,6 +200,10 @@ void explore(Board &board, int depth, bool allow_progress,
 
 int main() {
   std::string fen;
+  // starpos
+  fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+  // a mate problem in matetrack
+  fen = "n2Bqk2/5p1p/5KP1/p7/8/8/2Q5/8 w - -";
   // 1. e4
   fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1";
   // 1. b3
@@ -269,30 +226,14 @@ int main() {
   Stats stats;
   Board board(fen);
 
-  std::cout << "sequential prepare" << std::endl;
-
   fen_map_t visited_keys;
-
   fens_todo_t fens_todo;
   for (auto &fp : fens_todo)
     fp = new fen_map_t;
 
   size_t pI_orig = progressIndex(board);
-
-  // sequential prepare, generate enough fens in the tree to parallelize
-  stats.clear();
-  {
-    poslist_t poslist;
-    int edepth = -1;
-    while (poslist.size() <= 10 * std::thread::hardware_concurrency() &&
-           edepth <= depth) {
-      edepth++;
-      collect(board, edepth, allow_progress, handle, stats, poslist);
-    }
-
-    for (const auto &[pbfen, fendepth] : poslist)
-      (*fens_todo[pI_orig])[pbfen] = depth - edepth + fendepth;
-  }
+  auto key = Board::Compact::encode(board);
+  (*fens_todo[pI_orig])[key] = depth;
 
   // Start exploring.
   std::cout << "Exploring tree" << std::endl;
