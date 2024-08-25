@@ -259,7 +259,7 @@ int main() {
   // 1. g4
   fen = "rnbqkbnr/pppppppp/8/8/6P1/8/PPPPPP1P/RNBQKBNR b KQkq - 0 1";
 
-  int depth = 8;
+  int depth = 20;
 
   bool allow_progress = false;
 
