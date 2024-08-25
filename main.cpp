@@ -74,17 +74,15 @@ std::string getCurrentDateTime() {
 
   // Convert to string and return
   return dateTimeStream.str();
-}
+};
 
 struct Stats {
   std::atomic<size_t> gets;
   std::atomic<size_t> hits;
-  std::atomic<size_t> visited;
+  std::atomic<size_t> nodes;
 
-  void clear() {
-      gets = hits = visited = 0;
-  }
-}
+  void clear() { gets = hits = nodes = 0; };
+};
 
 // returns an index that signifies progress during a chess game,
 // this index will never increase during a game.
@@ -119,9 +117,9 @@ size_t progressIndex(const Board &board) {
 // collect brute force all fens reachable up to a given depth, useful for a
 // quick precompute?
 void collect(Board &board, int depth, bool allow_progress,
-             std::uintptr_t handle, Stats &stats,
-             poslist_t &poslist) {
+             std::uintptr_t handle, Stats &stats, poslist_t &poslist) {
 
+  stats.nodes++;
   std::vector<std::pair<std::string, int>> result =
       cdbdirect_get(handle, board.getFen(false));
   stats.gets++;
@@ -165,9 +163,10 @@ void collect(Board &board, int depth, bool allow_progress,
 
 // main function, generates a map of all visited keys with their maximum depth
 void explore(Board &board, int depth, bool allow_progress,
-             std::uintptr_t handle, Stats &stats,
-             zobrist_map_t &visited_keys, fens_todo_t &fens_todo) {
+             std::uintptr_t handle, Stats &stats, zobrist_map_t &visited_keys,
+             fens_todo_t &fens_todo) {
 
+  stats.nodes++;
   std::uint64_t key = board.hash();
 
   // quick exist if this has already been explored at equal or higher depth
@@ -224,8 +223,8 @@ void explore(Board &board, int depth, bool allow_progress,
       board.makeMove<true>(m);
       size_t pI_2 = progressIndex(board);
       if (pI_1 == pI_2 || allow_progress) {
-        explore(board, depth - 1, allow_progress, handle, stats,
-                visited_keys, fens_todo);
+        explore(board, depth - 1, allow_progress, handle, stats, visited_keys,
+                fens_todo);
       } else {
         // probe DB: don't add to the todos if it is not in the DB
         // saves significant memory, but slows down at low depth.
@@ -307,9 +306,10 @@ int main() {
   std::cout << "    starting memory virt : " << std::setw(18) << mem_virt
             << " res :" << std::setw(18) << mem_res << std::endl;
 
-  size_t total_visited = 0;
+  size_t total_assigned = 0;
   size_t total_gets = 0;
   size_t total_hits = 0;
+  size_t total_nodes = 0;
   std::vector<size_t> total_counts(depth + 1, 0);
 
   auto total_t_start = std::chrono::high_resolution_clock::now();
@@ -336,15 +336,26 @@ int main() {
 
         size_t pieces_count = pieceProgress + 2;
 
-        std::cout << "Iteration : " << std::setw(4) << iter << " starting from "
-                  << std::setw(18) << fens_ongoing.size() << " fens"
+        std::cout << "Iteration : " << std::setw(4) << iter << std::endl;
+
+        std::cout << std::endl;
+        std::cout << std::setw(22) << "starting fens:" << std::setw(22)
+                  << fens_ongoing.size() << std::endl;
+        std::cout << std::setw(22) << "pieces:" << std::setw(22) << pieces_count
                   << std::endl;
-        std::cout << "                 with pieces" << std::setw(4)
-                  << pieces_count << " pawn progress" << std::setw(4)
-                  << pawnProgress << " progress index" << std::setw(5) << pI_now
-                  << std::endl;
-        std::cout << "                 pending fens: " << std::setw(18)
+        std::cout << std::setw(22) << "pawn progress:" << std::setw(22)
+                  << pawnProgress << std::endl;
+        std::cout << std::setw(22) << "progress index:" << std::setw(22)
+                  << pI_now << std::endl;
+        std::cout << std::setw(22) << "pending fens:" << std::setw(22)
                   << total_pending << std::endl;
+        std::tie(mem_virt, mem_res) = get_memory();
+        std::cout << std::setw(22) << "start timestamp:" << std::setw(22)
+                  << getCurrentDateTime() << std::endl;
+        std::cout << std::setw(22) << "virtual memory:" << std::setw(22)
+                  << mem_virt << std::endl;
+        std::cout << std::setw(22) << "resident memory:" << std::setw(22)
+                  << mem_res << std::endl;
 
         auto t_start = std::chrono::high_resolution_clock::now();
 
@@ -388,39 +399,75 @@ int main() {
         double total_elapsed_time_sec =
             std::chrono::duration<float>(total_t_end - total_t_start).count();
 
-        size_t iter_getss = size_t(iter_gets / elapsed_time_sec);
-
-        total_gets += iter_gets;
+        size_t iter_getss = size_t(stats.gets / elapsed_time_sec);
+        total_gets += stats.gets;
         size_t total_getss = size_t(total_gets / total_elapsed_time_sec);
 
-        size_t iter_visited = visited_keys.size();
-        total_visited += iter_visited;
+        size_t iter_hitss = size_t(stats.hits / elapsed_time_sec);
+        total_hits += stats.hits;
+        size_t total_hitss = size_t(total_hits / total_elapsed_time_sec);
+
+        size_t iter_nodess = size_t(stats.nodes / elapsed_time_sec);
+        total_nodes += stats.nodes;
+        size_t total_nodess = size_t(total_nodes / total_elapsed_time_sec);
+
+        size_t iter_assigned = visited_keys.size();
+        size_t iter_assigneds = size_t(iter_assigned / elapsed_time_sec);
+        total_assigned += iter_assigned;
+        size_t total_assigneds =
+            size_t(total_assigned / total_elapsed_time_sec);
 
         // Debrief
-        std::cout << "                 iteration ended : "
-                  << getCurrentDateTime() << std::endl;
         std::tie(mem_virt, mem_res) = get_memory();
-        std::cout << "                 memory virt : " << std::setw(18)
-                  << mem_virt << " res :" << std::setw(18) << mem_res
+        std::cout << std::setw(22) << "end timestamp:" << std::setw(22)
+                  << getCurrentDateTime() << std::endl;
+        std::cout << std::setw(22) << "virtual memory:" << std::setw(22)
+                  << mem_virt << std::endl;
+        std::cout << std::setw(22) << "resident memory:" << std::setw(22)
+                  << mem_res << std::endl;
+        std::cout << std::setw(22) << "iteration time:" << std::fixed
+                  << std::setw(22) << std::setprecision(3) << elapsed_time_sec
                   << std::endl;
-        std::cout << std::setw(4) << "  " << std::setw(18) << "iter time"
-                  << std::setw(18) << "iter count" << std::setw(18)
-                  << "total time" << std::setw(18) << "total count"
+        std::cout << std::setw(22) << "total time:" << std::fixed
+                  << std::setw(22) << std::setprecision(3)
+                  << total_elapsed_time_sec << std::endl;
+
+        std::cout << std::endl;
+        std::cout << std::setw(4) << "  " << std::setw(18) << "iter assigned"
+                  << std::setw(18) << "iter assigned/s" << std::setw(18)
+                  << "total assigned" << std::setw(18) << "total assigned/s"
                   << std::endl;
-        std::cout << std::setw(4) << "  " << std::setw(18) << elapsed_time_sec
-                  << std::setw(18) << iter_visited << std::setw(18)
-                  << total_elapsed_time_sec << std::setw(18) << total_visited
+        std::cout << std::setw(4) << "  " << std::setw(18) << iter_assigned
+                  << std::setw(18) << iter_assigneds << std::setw(18)
+                  << total_assigned << std::setw(18) << total_assigneds
                   << std::endl;
 
         std::cout << std::setw(4) << "  " << std::setw(18) << "iter DB gets"
                   << std::setw(18) << "iter DB gets/s" << std::setw(18)
                   << "total DB gets" << std::setw(18) << "total DB gets/s"
                   << std::endl;
-        std::cout << std::setw(4) << "  " << std::setw(18) << iter_gets
+        std::cout << std::setw(4) << "  " << std::setw(18) << stats.gets
                   << std::setw(18) << iter_getss << std::setw(18) << total_gets
                   << std::setw(18) << total_getss << std::endl;
 
+        std::cout << std::setw(4) << "  " << std::setw(18) << "iter DB hits"
+                  << std::setw(18) << "iter DB hits/s" << std::setw(18)
+                  << "total DB hits" << std::setw(18) << "total DB hits/s"
+                  << std::endl;
+        std::cout << std::setw(4) << "  " << std::setw(18) << stats.hits
+                  << std::setw(18) << iter_hitss << std::setw(18) << total_hits
+                  << std::setw(18) << total_hitss << std::endl;
+
+        std::cout << std::setw(4) << "  " << std::setw(18) << "iter nodes"
+                  << std::setw(18) << "iter nodes/s" << std::setw(18)
+                  << "total nodes" << std::setw(18) << "total nodes/s"
+                  << std::endl;
+        std::cout << std::setw(4) << "  " << std::setw(18) << stats.nodes
+                  << std::setw(18) << iter_nodess << std::setw(18)
+                  << total_nodes << std::setw(18) << total_nodess << std::endl;
+
         // Detailed info
+        std::cout << std::endl;
         std::cout << std::setw(4) << "ply" << std::setw(18) << "iter count"
                   << std::setw(18) << "iter cumulative" << std::setw(18)
                   << "total count" << std::setw(18) << "total cumulative"
