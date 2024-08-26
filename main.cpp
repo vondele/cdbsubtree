@@ -36,7 +36,14 @@ using fen_map_t = phmap::parallel_flat_hash_map<
     std::equal_to<PackedBoard>,
     std::allocator<std::pair<PackedBoard, std::int16_t>>, 8, std::mutex>;
 
-using fens_todo_t = std::array<fen_map_t *, 3007>;
+using fens_progressIndex_t = std::array<fen_map_t *, 3007>;
+
+using fen_set_t =
+    phmap::parallel_flat_hash_set<PackedBoard, std::hash<PackedBoard>,
+                                  std::equal_to<PackedBoard>,
+                                  std::allocator<PackedBoard>, 8, std::mutex>;
+
+using fens_depthIndex_t = std::vector<fen_set_t *>;
 
 using poslist_t = std::map<PackedBoard, int>;
 
@@ -120,83 +127,67 @@ size_t progressIndex(const Board &board) {
   return (nPieces - 2) * 97 + pawnProgress;
 }
 
-// main function, generates a map of all visited keys with their maximum depth
-void explore(Board &board, int depth, const std::uintptr_t handle, Stats &stats,
-             fen_map_t &visited_keys, fens_todo_t &fens_todo,
-             const int maxCPLoss) {
+// progress a list of fens to the next depth
+void explore(const fen_set_t::EmbeddedSet &fen_list, int depth,
+             const std::uintptr_t handle, Stats &stats, fen_set_t &visited_keys,
+             fens_depthIndex_t &fens_depthIndex,
+             fens_progressIndex_t &fens_progressIndex, const int maxCPLoss) {
 
-  stats.nodes++;
-  auto key = Board::Compact::encode(board);
+  for (const auto &key : fen_list) {
 
-  // quick exist if this has already been explored at equal or higher depth
-  int found_depth = -1;
-  visited_keys.if_contains(key, [&found_depth](fen_map_t::value_type &p) {
-    found_depth = p.second;
-  });
-  if (found_depth >= depth)
-    return;
+    stats.nodes++;
 
-  // probe DB
-  std::vector<std::pair<std::string, int>> result =
-      cdbdirect_get(handle, board.getFen(false));
-  stats.gets++;
-  size_t n_elements = result.size();
-  int ply = result[n_elements - 1].second;
+    Board board = Board::Compact::decode(key);
 
-  // not in DB
-  if (ply == -2)
-    return;
+    // probe DB
+    std::vector<std::pair<std::string, int>> result =
+        cdbdirect_get(handle, board.getFen(false));
+    stats.gets++;
+    size_t n_elements = result.size();
+    int ply = result[n_elements - 1].second;
 
-  stats.hits++;
+    if (ply == -2)
+      continue;
 
-  // In DB, add to map
-  std::int16_t value;
-  bool is_new_entry = visited_keys.lazy_emplace_l(
-      std::move(key),
-      [&](fen_map_t::value_type &p) {
-        value = p.second;
-        p.second = std::max(p.second, std::int16_t(depth));
-      },
-      [&](const fen_map_t::constructor &ctor) {
-        ctor(std::move(key), depth);
-        value = std::int16_t(depth - 1);
-      });
+    stats.hits++;
 
-  // Meanwhile already visited at sufficient depth
-  if (value >= depth)
-    return;
+    bool is_new_entry = visited_keys.lazy_emplace_l(
+        std::move(key), [](fen_set_t::value_type &p) {},
+        [&key](const fen_set_t::constructor &ctor) { ctor(std::move(key)); });
 
-  // No remaining depth
-  if (depth <= 0)
-    return;
+    if (!is_new_entry)
+      continue;
 
-  // No moves to explore
-  if (n_elements <= 1)
-    return;
+    if (depth == 0)
+      continue;
 
-  // Now explore the remaining moves
-  int bestScore = result[0].second;
-  size_t pI_1 = progressIndex(board);
-  for (auto &pair : result)
-    if (pair.first != "a0a0") {
-      if (bestScore - pair.second > maxCPLoss)
-        break;
-      Move m = uci::uciToMove(board, pair.first);
-      board.makeMove<true>(m);
-      size_t pI_2 = progressIndex(board);
-      if (pI_1 == pI_2) {
-        explore(board, depth - 1, handle, stats, visited_keys, fens_todo,
-                maxCPLoss);
-      } else {
-        // probe DB: don't add to the todos if it is not in the DB
-        // saves significant memory, but slows down at low depth.
-        std::vector<std::pair<std::string, int>> resultNext =
-            cdbdirect_get(handle, board.getFen(false));
-        stats.gets++;
-        if (resultNext[resultNext.size() - 1].second != -2) {
-          stats.hits++;
-          PackedBoard pbfen = Board::Compact::encode(board);
-          fens_todo[pI_2]->lazy_emplace_l(
+    // No moves to explore (can this happen?)
+    if (n_elements <= 1)
+      continue;
+
+    // Now explore the remaining moves
+    int bestScore = result[0].second;
+    size_t pI_1 = progressIndex(board);
+    for (auto &pair : result)
+      if (pair.first != "a0a0") {
+
+        if (bestScore - pair.second > maxCPLoss)
+          break;
+
+        Move m = uci::uciToMove(board, pair.first);
+        board.makeMove<true>(m);
+
+        PackedBoard pbfen = Board::Compact::encode(board);
+        size_t pI_2 = progressIndex(board);
+
+        if (pI_1 == pI_2) {
+          fens_depthIndex[depth - 1]->lazy_emplace_l(
+              std::move(pbfen), [](fen_set_t::value_type &p) {},
+              [&pbfen](const fen_set_t::constructor &ctor) {
+                ctor(std::move(pbfen));
+              });
+        } else {
+          fens_progressIndex[pI_2]->lazy_emplace_l(
               std::move(pbfen),
               [&pbfen, &depth](fen_map_t::value_type &p) {
                 p.second = std::max(p.second, std::int16_t(depth - 1));
@@ -205,11 +196,10 @@ void explore(Board &board, int depth, const std::uintptr_t handle, Stats &stats,
                 ctor(std::move(pbfen), depth - 1);
               });
         }
-      }
-      board.unmakeMove(m);
-    }
 
-  return;
+        board.unmakeMove(m);
+      }
+  }
 }
 
 int main(int argc, char const *argv[]) {
@@ -240,18 +230,27 @@ int main(int argc, char const *argv[]) {
   std::cout << "Opening DB" << std::endl;
   std::uintptr_t handle = cdbdirect_initialize("/mnt/ssd/chess-20240814/data");
 
-  // counters
-  Stats stats;
   Board board(fen);
 
-  fen_map_t visited_keys;
-  fens_todo_t fens_todo;
-  for (auto &fp : fens_todo)
+  if (cdbdirect_get(handle, board.getFen(false)).back().second == -2) {
+    std::cout << "Initial fen not in DB!" << std::endl;
+    std::cout << "Closing DB" << std::endl;
+    handle = cdbdirect_finalize(handle);
+    return 1;
+  }
+
+  // counters
+  Stats stats;
+
+  fen_set_t visited_keys;
+
+  fens_progressIndex_t fens_progressIndex;
+  for (auto &fp : fens_progressIndex)
     fp = new fen_map_t;
 
   size_t pI_orig = progressIndex(board);
   auto key = Board::Compact::encode(board);
-  (*fens_todo[pI_orig])[key] = depth;
+  (*fens_progressIndex[pI_orig])[key] = depth;
 
   // Start exploring.
   std::cout << "Exploring tree" << std::endl;
@@ -273,23 +272,25 @@ int main(int argc, char const *argv[]) {
   for (int pieceProgress = 30; pieceProgress >= 0; pieceProgress--) {
     for (int pawnProgress = 96; pawnProgress >= 0; pawnProgress--) {
       size_t pI_now = pieceProgress * 97 + pawnProgress;
-      auto &fens_ongoing = *fens_todo[pI_now];
+      auto &fens_ongoing = *fens_progressIndex[pI_now];
 
       if (fens_ongoing.size() > 0) {
+
+        auto t_start = std::chrono::high_resolution_clock::now();
 
         stats.clear();
 
         std::vector<size_t> iter_counts(depth + 1, 0);
 
         iter++;
-        std::cout << std::endl;
 
         size_t total_pending = 0;
         for (int pI_scan = pI_now; pI_scan >= 0; pI_scan--)
-          total_pending += (*fens_todo[pI_scan]).size();
+          total_pending += (*fens_progressIndex[pI_scan]).size();
 
         size_t pieces_count = pieceProgress + 2;
 
+        std::cout << std::endl;
         std::cout << "Iteration : " << std::setw(4) << iter << std::endl;
 
         std::cout << std::endl;
@@ -311,40 +312,62 @@ int main(int argc, char const *argv[]) {
         std::cout << std::setw(22) << "resident memory:" << std::setw(22)
                   << mem_res << std::endl;
 
-        auto t_start = std::chrono::high_resolution_clock::now();
+        // put the ongoing fens for this progressIndex in different sets
+        // according to their needed depth;
+        fens_depthIndex_t fens_depthIndex(depth + 1);
+        for (auto &fp : fens_depthIndex)
+          fp = new fen_set_t;
 
-        // sort with the low depths first, more efficient, but also more memory
-        std::vector<std::pair<PackedBoard, std::int16_t>> todos;
         for (auto itr = fens_ongoing.begin(); itr != fens_ongoing.end(); ++itr)
-          todos.push_back(*itr);
-        fens_ongoing.clear();
+          fens_depthIndex[itr->second]->insert(itr->first);
 
-        std::sort(todos.begin(), todos.end(),
-                  [](std::pair<PackedBoard, std::int16_t> &a,
-                     std::pair<PackedBoard, std::int16_t> &b) {
-                    return a.second < b.second;
-                  });
+        // Detailed info
+        std::cout << std::endl;
+        std::cout << std::setw(4) << "ply" << std::setw(18) << "iter count"
+                  << std::setw(18) << "iter cumulative" << std::setw(18)
+                  << "total count" << std::setw(18) << "total cumulative"
+                  << std::endl;
 
-        ThreadPool pool(std::thread::hardware_concurrency());
+        size_t iter_cumu = 0;
+        size_t total_cumu = 0;
+        for (int idepth = depth; idepth >= 0; idepth--) {
 
-        for (const auto &[pbfen, fendepth] : todos) {
-          size_t size = pool.enqueue(
-              [&handle, &stats, &visited_keys, &fens_todo,
-               &maxCPLoss](PackedBoard pbfen, int depth) {
-                Board board = Board::Compact::decode(pbfen);
-                explore(board, depth, handle, stats, visited_keys, fens_todo,
-                        maxCPLoss);
-              },
-              pbfen, fendepth);
-          // limit the size of the queue in the pool, no need to have it very
-          // long if (size >= 5000 * std::thread::hardware_concurrency())
-          // {
-          //     using namespace std::chrono_literals;
-          //     std::this_thread::sleep_for(20ms);
-          // }
+          size_t n_visited_start = visited_keys.size();
+
+          ThreadPool pool(std::thread::hardware_concurrency());
+
+          auto &fens_currentDepth = *fens_depthIndex[idepth];
+
+          for (size_t i = 0; i < fens_currentDepth.subcnt(); ++i) {
+            pool.enqueue(
+                [&fens_currentDepth, &idepth, &handle, &stats, &visited_keys,
+                 &fens_depthIndex, &fens_progressIndex, &maxCPLoss](size_t i) {
+                  fens_currentDepth.with_submap(
+                      i, [&](const fen_set_t::EmbeddedSet &set) {
+                        explore(set, idepth, handle, stats, visited_keys,
+                                fens_depthIndex, fens_progressIndex, maxCPLoss);
+                      });
+                },
+                i);
+          }
+
+          pool.wait();
+
+          size_t n_visited_stop = visited_keys.size();
+
+          int ply = depth - idepth;
+          iter_counts[ply] = n_visited_stop - n_visited_start;
+          total_counts[ply] += iter_counts[ply];
+          iter_cumu += iter_counts[ply];
+          total_cumu += total_counts[ply];
+          std::cout << std::setw(4) << ply << std::setw(18) << iter_counts[ply]
+                    << std::setw(18) << iter_cumu << std::setw(18)
+                    << total_counts[ply] << std::setw(18) << total_cumu
+                    << std::endl;
+
+          delete fens_depthIndex[idepth];
         }
 
-        pool.wait();
         auto t_end = std::chrono::high_resolution_clock::now();
         double elapsed_time_sec =
             std::chrono::duration<float>(t_end - t_start).count();
@@ -372,6 +395,7 @@ int main(int argc, char const *argv[]) {
             size_t(total_assigned / total_elapsed_time_sec);
 
         // Debrief
+        std::cout << std::endl;
         std::tie(mem_virt, mem_res) = get_memory();
         std::cout << std::setw(22) << "end timestamp:" << std::setw(22)
                   << getCurrentDateTime() << std::endl;
@@ -420,42 +444,18 @@ int main(int argc, char const *argv[]) {
                   << std::setw(18) << iter_nodess << std::setw(18)
                   << total_nodes << std::setw(18) << total_nodess << std::endl;
 
-        // Detailed info
-        std::cout << std::endl;
-        std::cout << std::setw(4) << "ply" << std::setw(18) << "iter count"
-                  << std::setw(18) << "iter cumulative" << std::setw(18)
-                  << "total count" << std::setw(18) << "total cumulative"
-                  << std::endl;
-
-        for (const auto &[key, value] : visited_keys)
-          iter_counts[depth - value]++;
-
-        size_t iter_cumu = 0;
-        size_t total_cumu = 0;
-        for (int ply = 0; ply <= depth; ply++) {
-          total_counts[ply] += iter_counts[ply];
-          iter_cumu += iter_counts[ply];
-          total_cumu += total_counts[ply];
-          std::cout << std::setw(4) << ply << std::setw(18) << iter_counts[ply]
-                    << std::setw(18) << iter_cumu << std::setw(18)
-                    << total_counts[ply] << std::setw(18) << total_cumu
-                    << std::endl;
-        }
-
         // Prepare for next iter
         visited_keys.clear();
       }
       // Done with this map
-      delete fens_todo[pI_now];
+      delete fens_progressIndex[pI_now];
     }
   }
 
   std::cout << std::endl;
   std::cout << "Finished all iterations! " << std::endl;
+
   std::cout << "Closing DB" << std::endl;
-
-  // close DB
   handle = cdbdirect_finalize(handle);
-
   return 0;
 }
