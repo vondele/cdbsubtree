@@ -52,6 +52,17 @@ std::pair<size_t, size_t> get_memory() {
                         resident * page_size / (1024 * 1024));
 };
 
+// locate command line arguments
+inline bool find_argument(const std::vector<std::string> &args,
+                          std::vector<std::string>::const_iterator &pos,
+                          std::string_view arg,
+                          bool without_parameter = false) {
+  pos = std::find(args.begin(), args.end(), arg);
+
+  return pos != args.end() &&
+         (without_parameter || std::next(pos) != args.end());
+}
+
 // local data and time
 std::string getCurrentDateTime() {
   // Get current time
@@ -110,8 +121,9 @@ size_t progressIndex(const Board &board) {
 }
 
 // main function, generates a map of all visited keys with their maximum depth
-void explore(Board &board, int depth, std::uintptr_t handle, Stats &stats,
-             fen_map_t &visited_keys, fens_todo_t &fens_todo) {
+void explore(Board &board, int depth, const std::uintptr_t handle, Stats &stats,
+             fen_map_t &visited_keys, fens_todo_t &fens_todo,
+             const int maxCPLoss) {
 
   stats.nodes++;
   auto key = Board::Compact::encode(board);
@@ -163,14 +175,18 @@ void explore(Board &board, int depth, std::uintptr_t handle, Stats &stats,
     return;
 
   // Now explore the remaining moves
+  int bestScore = result[0].second;
   size_t pI_1 = progressIndex(board);
   for (auto &pair : result)
     if (pair.first != "a0a0") {
+      if (bestScore - pair.second > maxCPLoss)
+        break;
       Move m = uci::uciToMove(board, pair.first);
       board.makeMove<true>(m);
       size_t pI_2 = progressIndex(board);
       if (pI_1 == pI_2) {
-        explore(board, depth - 1, handle, stats, visited_keys, fens_todo);
+        explore(board, depth - 1, handle, stats, visited_keys, fens_todo,
+                maxCPLoss);
       } else {
         // probe DB: don't add to the todos if it is not in the DB
         // saves significant memory, but slows down at low depth.
@@ -196,23 +212,29 @@ void explore(Board &board, int depth, std::uintptr_t handle, Stats &stats,
   return;
 }
 
-int main() {
-  std::string fen;
-  // starpos
-  fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-  // a mate problem in matetrack
-  fen = "n2Bqk2/5p1p/5KP1/p7/8/8/2Q5/8 w - -";
-  // 1. e4
-  fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1";
-  // 1. b3
-  fen = "rnbqkbnr/pppppppp/8/8/8/1P6/P1PPPPPP/RNBQKBNR b KQkq - 0 1";
-  // 1. g4
-  fen = "rnbqkbnr/pppppppp/8/8/6P1/8/PPPPPP1P/RNBQKBNR b KQkq - 0 1";
+int main(int argc, char const *argv[]) {
 
-  int depth = 20;
+  const std::vector<std::string> args(argv + 1, argv + argc);
+  std::vector<std::string>::const_iterator pos;
+
+  // 1. g4
+  std::string fen =
+      "rnbqkbnr/pppppppp/8/8/6P1/8/PPPPPP1P/RNBQKBNR b KQkq - 0 1";
+  int depth = 8;
+  int maxCPLoss = std::numeric_limits<int>::max();
+
+  if (find_argument(args, pos, "--depth"))
+    depth = std::stoi(*std::next(pos));
+
+  if (find_argument(args, pos, "--maxCPLoss"))
+    maxCPLoss = std::stoi(*std::next(pos));
+
+  if (find_argument(args, pos, "--fen"))
+    fen = {*std::next(pos)};
 
   std::cout << "Exploring fen: " << fen << std::endl;
   std::cout << "Max depth: " << depth << std::endl;
+  std::cout << "Max cp loss: " << maxCPLoss << std::endl;
   std::cout << "Patience... " << std::endl;
 
   std::cout << "Opening DB" << std::endl;
@@ -307,10 +329,11 @@ int main() {
 
         for (const auto &[pbfen, fendepth] : todos) {
           size_t size = pool.enqueue(
-              [&handle, &stats, &visited_keys, &fens_todo](PackedBoard pbfen,
-                                                           int depth) {
+              [&handle, &stats, &visited_keys, &fens_todo,
+               &maxCPLoss](PackedBoard pbfen, int depth) {
                 Board board = Board::Compact::decode(pbfen);
-                explore(board, depth, handle, stats, visited_keys, fens_todo);
+                explore(board, depth, handle, stats, visited_keys, fens_todo,
+                        maxCPLoss);
               },
               pbfen, fendepth);
           // limit the size of the queue in the pool, no need to have it very
