@@ -334,24 +334,28 @@ int main(int argc, char const *argv[]) {
 
           size_t n_visited_start = visited_keys.size();
 
-          ThreadPool pool(std::thread::hardware_concurrency());
-
           auto &fens_currentDepth = *fens_depthIndex[idepth];
 
-          for (size_t i = 0; i < fens_currentDepth.subcnt(); ++i) {
-            pool.enqueue(
-                [&fens_currentDepth, &idepth, &handle, &stats, &visited_keys,
-                 &fens_depthIndex, &fens_progressIndex, &maxCPLoss](size_t i) {
-                  fens_currentDepth.with_submap(
-                      i, [&](const fen_set_t::EmbeddedSet &set) {
-                        explore(set, idepth, handle, stats, visited_keys,
-                                fens_depthIndex, fens_progressIndex, maxCPLoss);
-                      });
-                },
-                i);
-          }
+          if (fens_currentDepth.size() > 0) {
+            ThreadPool pool(std::thread::hardware_concurrency());
 
-          pool.wait();
+            for (size_t i = 0; i < fens_currentDepth.subcnt(); ++i) {
+              pool.enqueue(
+                  [&fens_currentDepth, &idepth, &handle, &stats, &visited_keys,
+                   &fens_depthIndex, &fens_progressIndex,
+                   &maxCPLoss](size_t i) {
+                    fens_currentDepth.with_submap(
+                        i, [&](const fen_set_t::EmbeddedSet &set) {
+                          explore(set, idepth, handle, stats, visited_keys,
+                                  fens_depthIndex, fens_progressIndex,
+                                  maxCPLoss);
+                        });
+                  },
+                  i);
+            }
+
+            pool.wait();
+          }
 
           size_t n_visited_stop = visited_keys.size();
 
