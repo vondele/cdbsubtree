@@ -6,6 +6,7 @@ LIBS = -lcdbdirect -lterarkdb -lterark-zip-r -lboost_fiber -lboost_context -ltcm
 
 all: cdbsubtree
 
+CXXFLAGS = -std=c++20 -O3 -g -march=native -fno-omit-frame-pointer -fno-inline
 CXXFLAGS = -std=c++20 -O3 -g -march=native
 
 cdbsubtree: main.cpp

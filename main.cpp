@@ -202,41 +202,19 @@ void explore(const fen_set_t::EmbeddedSet &fen_list, int depth,
   }
 }
 
-int main(int argc, char const *argv[]) {
-
-  const std::vector<std::string> args(argv + 1, argv + argc);
-  std::vector<std::string>::const_iterator pos;
-
-  // 1. g4
-  std::string fen =
-      "rnbqkbnr/pppppppp/8/8/6P1/8/PPPPPP1P/RNBQKBNR b KQkq - 0 1";
-  int depth = 8;
-  int maxCPLoss = std::numeric_limits<int>::max();
-
-  if (find_argument(args, pos, "--depth"))
-    depth = std::stoi(*std::next(pos));
-
-  if (find_argument(args, pos, "--maxCPLoss"))
-    maxCPLoss = std::stoi(*std::next(pos));
-
-  if (find_argument(args, pos, "--fen"))
-    fen = {*std::next(pos)};
+size_t cdbsubtree(std::uintptr_t handle, std::string fen, int depth,
+                  int maxCPLoss) {
 
   std::cout << "Exploring fen: " << fen << std::endl;
   std::cout << "Max depth: " << depth << std::endl;
   std::cout << "Max cp loss: " << maxCPLoss << std::endl;
   std::cout << "Patience... " << std::endl;
 
-  std::cout << "Opening DB" << std::endl;
-  std::uintptr_t handle = cdbdirect_initialize("/mnt/ssd/chess-20240814/data");
-
   Board board(fen);
 
   if (cdbdirect_get(handle, board.getFen(false)).back().second == -2) {
     std::cout << "Initial fen not in DB!" << std::endl;
-    std::cout << "Closing DB" << std::endl;
-    handle = cdbdirect_finalize(handle);
-    return 1;
+    return 0;
   }
 
   // counters
@@ -337,7 +315,7 @@ int main(int argc, char const *argv[]) {
           auto &fens_currentDepth = *fens_depthIndex[idepth];
 
           if (fens_currentDepth.size() > 0) {
-            ThreadPool pool(std::thread::hardware_concurrency());
+            ThreadPool pool(std::thread::hardware_concurrency() * 3 / 2);
 
             for (size_t i = 0; i < fens_currentDepth.subcnt(); ++i) {
               pool.enqueue(
@@ -459,7 +437,57 @@ int main(int argc, char const *argv[]) {
   std::cout << std::endl;
   std::cout << "Finished all iterations! " << std::endl;
 
+  return total_assigned;
+}
+
+int main(int argc, char const *argv[]) {
+
+  const std::vector<std::string> args(argv + 1, argv + argc);
+  std::vector<std::string>::const_iterator pos;
+
+  // 1. g4
+  std::string fen =
+      "rnbqkbnr/pppppppp/8/8/6P1/8/PPPPPP1P/RNBQKBNR b KQkq - 0 1";
+  int depth = 8;
+  int maxCPLoss = std::numeric_limits<int>::max();
+
+  if (find_argument(args, pos, "--depth"))
+    depth = std::stoi(*std::next(pos));
+
+  if (find_argument(args, pos, "--maxCPLoss"))
+    maxCPLoss = std::stoi(*std::next(pos));
+
+  if (find_argument(args, pos, "--fen"))
+    fen = {*std::next(pos)};
+
+  bool allmoves = find_argument(args, pos, "--moves", true);
+
+  std::cout << "Opening DB" << std::endl;
+  std::uintptr_t handle = cdbdirect_initialize("/mnt/ssd/chess-20240814/data");
+
+  if (!allmoves) {
+    size_t total_assigned = cdbsubtree(handle, fen, depth, maxCPLoss);
+  } else {
+    std::cout << "Going through all moves for " << fen << std::endl;
+    Board board(fen);
+    Movelist moves;
+    movegen::legalmoves(moves, board);
+    for (auto m : moves) {
+      board.makeMove<true>(m);
+      std::streambuf *old = std::cout.rdbuf();
+      std::stringstream ss;
+      std::cout.rdbuf(ss.rdbuf());
+      fen = board.getFen(false);
+      size_t total_assigned = cdbsubtree(handle, fen, depth, maxCPLoss);
+      std::cout.rdbuf(old);
+      std::cout << "    " << uci::moveToUci(m) << " : " << total_assigned
+                << std::endl;
+      board.unmakeMove(m);
+    }
+  }
+
   std::cout << "Closing DB" << std::endl;
   handle = cdbdirect_finalize(handle);
+
   return 0;
 }
