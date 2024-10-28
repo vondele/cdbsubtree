@@ -457,11 +457,11 @@ int main(int argc, char const *argv[]) {
   if (find_argument(args, pos, "--maxCPLoss"))
     maxCPLoss = std::stoi(*std::next(pos));
 
-  if (find_argument(args, pos, "--fen")) {
+  if (find_argument(args, pos, "--fen"))
     fen = {*std::next(pos)};
-    if (fen == "startpos")
-      fen = constants::STARTPOS;
-  }
+
+  if (fen == "startpos")
+    fen = constants::STARTPOS;
 
   bool allmoves = find_argument(args, pos, "--moves", true);
 
