@@ -457,16 +457,19 @@ int main(int argc, char const *argv[]) {
   if (find_argument(args, pos, "--maxCPLoss"))
     maxCPLoss = std::stoi(*std::next(pos));
 
-  if (find_argument(args, pos, "--fen"))
+  if (find_argument(args, pos, "--fen")) {
     fen = {*std::next(pos)};
+    if (fen == "startpos")
+      fen = constants::STARTPOS;
+  }
 
   bool allmoves = find_argument(args, pos, "--moves", true);
 
   std::cout << "Opening DB" << std::endl;
-  std::uintptr_t handle = cdbdirect_initialize("/mnt/ssd/chess-20240814/data");
+  std::uintptr_t handle = cdbdirect_initialize(CHESSDB_PATH);
 
   if (!allmoves) {
-    size_t total_assigned = cdbsubtree(handle, fen, depth, maxCPLoss);
+    cdbsubtree(handle, fen, depth, maxCPLoss);
   } else {
     std::cout << "Going through all moves for " << fen << std::endl;
     Board board(fen);
@@ -481,7 +484,7 @@ int main(int argc, char const *argv[]) {
       size_t total_assigned = cdbsubtree(handle, fen, depth, maxCPLoss);
       std::cout.rdbuf(old);
       std::cout << "    " << uci::moveToUci(m) << " : " << total_assigned
-                << std::endl;
+                << " nodes" << std::endl;
       board.unmakeMove(m);
     }
   }
