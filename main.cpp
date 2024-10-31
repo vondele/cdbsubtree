@@ -47,6 +47,13 @@ using fens_depthIndex_t = std::vector<fen_set_t *>;
 
 using poslist_t = std::map<PackedBoard, int>;
 
+inline size_t sumValues(const fen_map_t &map) {
+  size_t sum = 0;
+  for (const auto &pair : map)
+    sum += pair.second;
+  return sum;
+}
+
 // get memory in MB
 std::pair<size_t, size_t> get_memory() {
   size_t tSize = 0, resident = 0, share = 0;
@@ -131,7 +138,8 @@ size_t progressIndex(const Board &board) {
 void explore(const fen_set_t::EmbeddedSet &fen_list, int depth,
              const std::uintptr_t handle, Stats &stats, fen_set_t &visited_keys,
              fens_depthIndex_t &fens_depthIndex,
-             fens_progressIndex_t &fens_progressIndex, const int maxCPLoss) {
+             fens_progressIndex_t &fens_progressIndex, const int maxCPLoss,
+             fen_map_t *fens_with_unseen) {
 
   for (const auto &key : fen_list) {
 
@@ -160,6 +168,35 @@ void explore(const fen_set_t::EmbeddedSet &fen_list, int depth,
 
     if (depth == 0)
       continue;
+
+    if (fens_with_unseen) {
+      std::int16_t count_unseen = 0;
+      Movelist moves;
+      movegen::legalmoves(moves, board);
+
+      // see if the position after any unseen move is in db
+      for (const auto &m : moves) {
+        auto it =
+            std::find_if(result.begin(), result.end(), [&m](const auto &p) {
+              return p.first == uci::moveToUci(m);
+            });
+
+        if (it == result.end()) {
+          board.makeMove<true>(m);
+          auto r = cdbdirect_get(handle, board.getFen(false));
+          stats.gets++;
+          if (r.back().second != -2)
+            count_unseen++;
+          board.unmakeMove(m);
+        }
+      }
+      if (count_unseen)
+        fens_with_unseen->lazy_emplace_l(
+            std::move(key), [](fen_map_t::value_type &p) {},
+            [&key, &count_unseen](const fen_map_t::constructor &ctor) {
+              ctor(std::move(key), count_unseen);
+            });
+    }
 
     // No moves to explore (can this happen?)
     if (n_elements <= 1)
@@ -203,7 +240,7 @@ void explore(const fen_set_t::EmbeddedSet &fen_list, int depth,
 }
 
 size_t cdbsubtree(std::uintptr_t handle, std::string fen, int depth,
-                  int maxCPLoss) {
+                  int maxCPLoss, fen_map_t *fens_with_unseen) {
 
   std::cout << "Exploring fen: " << fen << std::endl;
   std::cout << "Max depth: " << depth << std::endl;
@@ -320,13 +357,13 @@ size_t cdbsubtree(std::uintptr_t handle, std::string fen, int depth,
             for (size_t i = 0; i < fens_currentDepth.subcnt(); ++i) {
               pool.enqueue(
                   [&fens_currentDepth, &idepth, &handle, &stats, &visited_keys,
-                   &fens_depthIndex, &fens_progressIndex,
-                   &maxCPLoss](size_t i) {
+                   &fens_depthIndex, &fens_progressIndex, &maxCPLoss,
+                   &fens_with_unseen](size_t i) {
                     fens_currentDepth.with_submap(
                         i, [&](const fen_set_t::EmbeddedSet &set) {
                           explore(set, idepth, handle, stats, visited_keys,
                                   fens_depthIndex, fens_progressIndex,
-                                  maxCPLoss);
+                                  maxCPLoss, fens_with_unseen);
                         });
                   },
                   i);
@@ -420,11 +457,21 @@ size_t cdbsubtree(std::uintptr_t handle, std::string fen, int depth,
 
         std::cout << std::setw(4) << "  " << std::setw(18) << "iter nodes"
                   << std::setw(18) << "iter nodes/s" << std::setw(18)
-                  << "total nodes" << std::setw(18) << "total nodes/s"
-                  << std::endl;
+                  << "total nodes" << std::setw(18) << "total nodes/s";
+        if (fens_with_unseen)
+          std::cout << std::setw(4) << "  " << std::setw(18)
+                    << "unseen pos:edges";
+        std::cout << std::endl;
         std::cout << std::setw(4) << "  " << std::setw(18) << stats.nodes
                   << std::setw(18) << iter_nodess << std::setw(18)
-                  << total_nodes << std::setw(18) << total_nodess << std::endl;
+                  << total_nodes << std::setw(18) << total_nodess;
+        if (fens_with_unseen) {
+          auto unseen_str = std::to_string(fens_with_unseen->size()) + ":" +
+                            std::to_string(sumValues(*fens_with_unseen));
+
+          std::cout << std::setw(4) << "  " << std::setw(18) << unseen_str;
+        }
+        std::cout << std::endl;
 
         // Prepare for next iter
         visited_keys.clear();
@@ -464,12 +511,27 @@ int main(int argc, char const *argv[]) {
     fen = constants::STARTPOS;
 
   bool allmoves = find_argument(args, pos, "--moves", true);
+  bool uncover = find_argument(args, pos, "--findUnseenEdges", true);
+  fen_map_t *fens_with_unseen = uncover ? new fen_map_t : NULL;
 
   std::cout << "Opening DB" << std::endl;
   std::uintptr_t handle = cdbdirect_initialize(CHESSDB_PATH);
 
   if (!allmoves) {
-    cdbsubtree(handle, fen, depth, maxCPLoss);
+    size_t total_assigned =
+        cdbsubtree(handle, fen, depth, maxCPLoss, fens_with_unseen);
+    std::cout << "Done analysing subtree of " << fen << " to depth " << depth
+              << ":" << std::endl;
+    std::cout << "Found " << total_assigned << " nodes";
+    if (fens_with_unseen) {
+      auto count = fens_with_unseen->size();
+      if (count) {
+        std::cout << ", " << count << " ("
+                  << int(count * 100 / total_assigned + 0.5) << "%) have "
+                  << sumValues(*fens_with_unseen) << " unseen edges";
+      }
+    }
+    std::cout << std::endl;
   } else {
     std::cout << "Going through all moves for " << fen << std::endl;
     Board board(fen);
@@ -481,12 +543,41 @@ int main(int argc, char const *argv[]) {
       std::stringstream ss;
       std::cout.rdbuf(ss.rdbuf());
       fen = board.getFen(false);
-      size_t total_assigned = cdbsubtree(handle, fen, depth, maxCPLoss);
+      fen_map_t *local_fens_with_unseen = uncover ? new fen_map_t : NULL;
+      size_t total_assigned =
+          cdbsubtree(handle, fen, depth, maxCPLoss, local_fens_with_unseen);
       std::cout.rdbuf(old);
       std::cout << "    " << uci::moveToUci(m) << " : " << total_assigned
-                << " nodes" << std::endl;
+                << " nodes";
+      if (local_fens_with_unseen) {
+        auto count = local_fens_with_unseen->size();
+        if (count) {
+          std::cout << ", " << count << " ("
+                    << int(count * 100 / total_assigned + 0.5) << "%) have "
+                    << sumValues(*local_fens_with_unseen) << " unseen edges";
+          // store the newly found nodes in the global hash map
+          for (const auto &pair : *local_fens_with_unseen)
+            (*fens_with_unseen)[pair.first] = pair.second;
+        }
+        delete local_fens_with_unseen;
+      }
+      std::cout << std::endl;
       board.unmakeMove(m);
     }
+  }
+
+  if (fens_with_unseen && fens_with_unseen->size()) {
+    std::ofstream ufile("unseen.epd");
+    assert(ufile.is_open());
+    for (const auto &pair : *fens_with_unseen) {
+      auto board = Board::Compact::decode(pair.first);
+      std::string fen = board.getFen(false);
+      ufile << fen << " c0 \"unseen moves: " << pair.second << "\";\n";
+    }
+    ufile.close();
+    std::cout << "Saved " << fens_with_unseen->size()
+              << " positions with a total of " << sumValues(*fens_with_unseen)
+              << " unseen edges in unseen.epd." << std::endl;
   }
 
   std::cout << "Closing DB" << std::endl;
