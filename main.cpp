@@ -174,8 +174,13 @@ void explore(const fen_set_t::EmbeddedSet &fen_list, int depth,
       Movelist moves;
       movegen::legalmoves(moves, board);
 
-      // see if the position after any unseen move is in db
+      std::int16_t unscored_total = moves.size() + 1 - result.size();
+      std::int16_t unscored_checked = 0;
+
+      // see if the position after any unscored move is in db
       for (const auto &m : moves) {
+        if (unscored_checked >= unscored_total)
+          break;
         auto it =
             std::find_if(result.begin(), result.end(), [&m](const auto &p) {
               return p.first == uci::moveToUci(m);
@@ -188,6 +193,7 @@ void explore(const fen_set_t::EmbeddedSet &fen_list, int depth,
           if (r.back().second != -2)
             count_unseen++;
           board.unmakeMove(m);
+          unscored_checked++;
         }
       }
       if (count_unseen)
