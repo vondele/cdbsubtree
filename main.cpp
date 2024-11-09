@@ -134,6 +134,37 @@ size_t progressIndex(const Board &board) {
   return (nPieces - 2) * 97 + pawnProgress;
 }
 
+int count_unseen_moves(Board &board,
+                       std::vector<std::pair<std::string, int>> &result,
+                       const std::uintptr_t handle, Stats &stats) {
+  int count_unseen = 0;
+  Movelist moves;
+  movegen::legalmoves(moves, board);
+
+  int unscored_total = moves.size() + 1 - result.size();
+  int unscored_checked = 0;
+
+  // check if the position after any unscored move is in the DB
+  for (const auto &m : moves) {
+    if (unscored_checked >= unscored_total)
+      break;
+    auto it = std::find_if(result.begin(), result.end(), [&m](const auto &p) {
+      return p.first == uci::moveToUci(m);
+    });
+
+    if (it == result.end()) {
+      board.makeMove<true>(m);
+      auto r = cdbdirect_get(handle, board.getFen(false));
+      stats.gets++;
+      if (r.back().second != -2)
+        count_unseen++;
+      board.unmakeMove(m);
+      unscored_checked++;
+    }
+  }
+  return count_unseen;
+}
+
 // progress a list of fens to the next depth
 void explore(const fen_set_t::EmbeddedSet &fen_list, int depth,
              const std::uintptr_t handle, Stats &stats, fen_set_t &visited_keys,
@@ -170,32 +201,7 @@ void explore(const fen_set_t::EmbeddedSet &fen_list, int depth,
       continue;
 
     if (fens_with_unseen) {
-      std::int16_t count_unseen = 0;
-      Movelist moves;
-      movegen::legalmoves(moves, board);
-
-      std::int16_t unscored_total = moves.size() + 1 - result.size();
-      std::int16_t unscored_checked = 0;
-
-      // see if the position after any unscored move is in db
-      for (const auto &m : moves) {
-        if (unscored_checked >= unscored_total)
-          break;
-        auto it =
-            std::find_if(result.begin(), result.end(), [&m](const auto &p) {
-              return p.first == uci::moveToUci(m);
-            });
-
-        if (it == result.end()) {
-          board.makeMove<true>(m);
-          auto r = cdbdirect_get(handle, board.getFen(false));
-          stats.gets++;
-          if (r.back().second != -2)
-            count_unseen++;
-          board.unmakeMove(m);
-          unscored_checked++;
-        }
-      }
+      int count_unseen = count_unseen_moves(board, result, handle, stats);
       if (count_unseen)
         fens_with_unseen->lazy_emplace_l(
             std::move(key), [](fen_map_t::value_type &p) {},
