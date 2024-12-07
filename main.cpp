@@ -139,7 +139,7 @@ void explore(const fen_set_t::EmbeddedSet &fen_list, int depth,
              const std::uintptr_t handle, Stats &stats, fen_set_t &visited_keys,
              fens_depthIndex_t &fens_depthIndex,
              fens_progressIndex_t &fens_progressIndex, const int maxCPLoss,
-             fen_map_t *fens_with_unseen) {
+             fen_map_t *fens_with_unseen, int root_ply_depth) {
 
   for (const auto &key : fen_list) {
 
@@ -154,7 +154,8 @@ void explore(const fen_set_t::EmbeddedSet &fen_list, int depth,
     size_t n_elements = result.size();
     int ply = result[n_elements - 1].second;
 
-    if (ply == -2)
+    // root_ply_depth is -2 if and only if strict subtree search is off
+    if (ply == -2 || (root_ply_depth != -2 && ply < root_ply_depth - depth))
       continue;
 
     stats.hits++;
@@ -240,19 +241,29 @@ void explore(const fen_set_t::EmbeddedSet &fen_list, int depth,
 }
 
 size_t cdbsubtree(std::uintptr_t handle, std::string fen, int depth,
-                  int maxCPLoss, fen_map_t *fens_with_unseen) {
+                  int maxCPLoss, fen_map_t *fens_with_unseen,
+                  bool strict_subtree) {
 
   std::cout << "Exploring fen: " << fen << std::endl;
   std::cout << "Max depth: " << depth << std::endl;
   std::cout << "Max cp loss: " << maxCPLoss << std::endl;
-  std::cout << "Patience... " << std::endl;
 
   Board board(fen);
 
-  if (cdbdirect_get(handle, board.getFen(false)).back().second == -2) {
+  int root_ply = cdbdirect_get(handle, board.getFen(false)).back().second;
+  if (root_ply == -2) {
     std::cout << "Initial fen not in DB!" << std::endl;
     return 0;
   }
+
+  int root_ply_depth = -2;
+  if (strict_subtree) {
+    std::cout << "Exploring strict subtree only, starting from root ply: "
+              << root_ply << std::endl;
+    root_ply_depth = root_ply + depth;
+  }
+
+  std::cout << "Patience... " << std::endl;
 
   // counters
   Stats stats;
@@ -358,12 +369,12 @@ size_t cdbsubtree(std::uintptr_t handle, std::string fen, int depth,
               pool.enqueue(
                   [&fens_currentDepth, &idepth, &handle, &stats, &visited_keys,
                    &fens_depthIndex, &fens_progressIndex, &maxCPLoss,
-                   &fens_with_unseen](size_t i) {
+                   &fens_with_unseen, &root_ply_depth](size_t i) {
                     fens_currentDepth.with_submap(
                         i, [&](const fen_set_t::EmbeddedSet &set) {
                           explore(set, idepth, handle, stats, visited_keys,
                                   fens_depthIndex, fens_progressIndex,
-                                  maxCPLoss, fens_with_unseen);
+                                  maxCPLoss, fens_with_unseen, root_ply_depth);
                         });
                   },
                   i);
@@ -512,14 +523,15 @@ int main(int argc, char const *argv[]) {
 
   bool allmoves = find_argument(args, pos, "--moves", true);
   bool uncover = find_argument(args, pos, "--findUnseenEdges", true);
+  bool strict_subtree = find_argument(args, pos, "--strictSubTree", true);
   fen_map_t *fens_with_unseen = uncover ? new fen_map_t : NULL;
 
   std::cout << "Opening DB" << std::endl;
   std::uintptr_t handle = cdbdirect_initialize(CHESSDB_PATH);
 
   if (!allmoves) {
-    size_t total_assigned =
-        cdbsubtree(handle, fen, depth, maxCPLoss, fens_with_unseen);
+    size_t total_assigned = cdbsubtree(handle, fen, depth, maxCPLoss,
+                                       fens_with_unseen, strict_subtree);
     std::cout << "Done analysing subtree of " << fen << " to depth " << depth
               << ":" << std::endl;
     std::cout << "Found " << total_assigned << " nodes";
@@ -545,7 +557,8 @@ int main(int argc, char const *argv[]) {
       fen = board.getFen(false);
       fen_map_t *local_fens_with_unseen = uncover ? new fen_map_t : NULL;
       size_t total_assigned =
-          cdbsubtree(handle, fen, depth, maxCPLoss, local_fens_with_unseen);
+          cdbsubtree(handle, fen, depth, maxCPLoss, local_fens_with_unseen,
+                     strict_subtree);
       std::cout.rdbuf(old);
       std::cout << "    " << uci::moveToUci(m) << " : " << total_assigned
                 << " nodes";
