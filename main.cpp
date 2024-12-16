@@ -198,9 +198,6 @@ void explore(const fen_set_t::EmbeddedSet &fen_list, int depth,
     if (!is_new_entry)
       continue;
 
-    if (depth == 0)
-      continue;
-
     if (fens_with_unseen) {
       int count_unseen = count_unseen_moves(board, result, handle, stats);
       if (count_unseen)
@@ -210,6 +207,9 @@ void explore(const fen_set_t::EmbeddedSet &fen_list, int depth,
               ctor(std::move(key), count_unseen);
             });
     }
+
+    if (depth == 0)
+      continue;
 
     // No moves to explore (can this happen?)
     if (n_elements <= 1)
