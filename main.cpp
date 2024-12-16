@@ -36,6 +36,14 @@ using fen_map_t = phmap::parallel_flat_hash_map<
     std::equal_to<PackedBoard>,
     std::allocator<std::pair<PackedBoard, std::int16_t>>, 8, std::mutex>;
 
+// store count of unseen moves, position's eval and eval gap to best unseen move
+using unseen_map_t = phmap::parallel_flat_hash_map<
+    PackedBoard, std::tuple<std::uint8_t, std::int16_t, int>,
+    std::hash<PackedBoard>, std::equal_to<PackedBoard>,
+    std::allocator<
+        std::pair<PackedBoard, std::tuple<std::uint8_t, std::int16_t, int>>>,
+    8, std::mutex>;
+
 using fens_progressIndex_t = std::array<fen_map_t *, 3007>;
 
 using fen_set_t =
@@ -47,11 +55,19 @@ using fens_depthIndex_t = std::vector<fen_set_t *>;
 
 using poslist_t = std::map<PackedBoard, int>;
 
-inline size_t sumValues(const fen_map_t &map) {
+inline size_t count_unseen_edges(const unseen_map_t &map) {
   size_t sum = 0;
   for (const auto &pair : map)
-    sum += pair.second;
+    sum += std::get<0>(pair.second);
   return sum;
+}
+
+inline size_t count_unseen_improved(const unseen_map_t &map) {
+  size_t count = 0;
+  for (const auto &pair : map)
+    if (std::get<2>(pair.second) > 0)
+      count++;
+  return count;
 }
 
 // get memory in MB
@@ -134,10 +150,20 @@ size_t progressIndex(const Board &board) {
   return (nPieces - 2) * 97 + pawnProgress;
 }
 
-int count_unseen_moves(Board &board,
-                       std::vector<std::pair<std::string, int>> &result,
-                       const std::uintptr_t handle, Stats &stats) {
-  int count_unseen = 0;
+int get_eval_gap(int pos_eval, int child_move_eval) {
+  // correctly deal with back propagation of mate and TB win scores
+  if (child_move_eval >= 15000)
+    return -child_move_eval - pos_eval + 1;
+  if (child_move_eval <= -15000)
+    return -child_move_eval - pos_eval - 1;
+  return -child_move_eval - pos_eval;
+}
+
+std::tuple<std::uint8_t, std::int16_t, int>
+count_unseen_moves(Board &board,
+                   std::vector<std::pair<std::string, int>> &result,
+                   const std::uintptr_t handle, Stats &stats) {
+  std::tuple<std::uint8_t, std::int16_t, int> count_unseen = {0, 0, 0};
   Movelist moves;
   movegen::legalmoves(moves, board);
 
@@ -156,8 +182,18 @@ int count_unseen_moves(Board &board,
       board.makeMove<true>(m);
       auto r = cdbdirect_get(handle, board.getFen(false));
       stats.gets++;
-      if (r.back().second != -2)
-        count_unseen++;
+      if (r.back().second != -2) {
+        if (std::get<0>(count_unseen) == 0) {
+          std::get<1>(count_unseen) = result.front().second;
+          std::get<2>(count_unseen) =
+              get_eval_gap(result.front().second, r.front().second);
+        } else {
+          std::get<2>(count_unseen) =
+              std::max(std::get<2>(count_unseen),
+                       get_eval_gap(result.front().second, r.front().second));
+        }
+        std::get<0>(count_unseen) += 1;
+      }
       board.unmakeMove(m);
       unscored_checked++;
     }
@@ -170,7 +206,7 @@ void explore(const fen_set_t::EmbeddedSet &fen_list, int depth,
              const std::uintptr_t handle, Stats &stats, fen_set_t &visited_keys,
              fens_depthIndex_t &fens_depthIndex,
              fens_progressIndex_t &fens_progressIndex, const int maxCPLoss,
-             fen_map_t *fens_with_unseen, int root_ply_depth) {
+             unseen_map_t *fens_with_unseen, int root_ply_depth) {
 
   for (const auto &key : fen_list) {
 
@@ -199,11 +235,11 @@ void explore(const fen_set_t::EmbeddedSet &fen_list, int depth,
       continue;
 
     if (fens_with_unseen) {
-      int count_unseen = count_unseen_moves(board, result, handle, stats);
-      if (count_unseen)
+      auto count_unseen = count_unseen_moves(board, result, handle, stats);
+      if (std::get<0>(count_unseen))
         fens_with_unseen->lazy_emplace_l(
-            std::move(key), [](fen_map_t::value_type &p) {},
-            [&key, &count_unseen](const fen_map_t::constructor &ctor) {
+            std::move(key), [](unseen_map_t::value_type &p) {},
+            [&key, &count_unseen](const unseen_map_t::constructor &ctor) {
               ctor(std::move(key), count_unseen);
             });
     }
@@ -253,7 +289,7 @@ void explore(const fen_set_t::EmbeddedSet &fen_list, int depth,
 }
 
 size_t cdbsubtree(std::uintptr_t handle, std::string fen, int depth,
-                  int maxCPLoss, fen_map_t *fens_with_unseen,
+                  int maxCPLoss, unseen_map_t *fens_with_unseen,
                   bool strict_subtree) {
 
   std::cout << "Exploring fen: " << fen << std::endl;
@@ -490,7 +526,7 @@ size_t cdbsubtree(std::uintptr_t handle, std::string fen, int depth,
                   << total_nodes << std::setw(18) << total_nodess;
         if (fens_with_unseen) {
           auto unseen_str = std::to_string(fens_with_unseen->size()) + ":" +
-                            std::to_string(sumValues(*fens_with_unseen));
+                            std::to_string(count_unseen_edges(*fens_with_unseen));
 
           std::cout << std::setw(4) << "  " << std::setw(18) << unseen_str;
         }
@@ -536,7 +572,7 @@ int main(int argc, char const *argv[]) {
   bool allmoves = find_argument(args, pos, "--moves", true);
   bool uncover = find_argument(args, pos, "--findUnseenEdges", true);
   bool strict_subtree = find_argument(args, pos, "--strictSubTree", true);
-  fen_map_t *fens_with_unseen = uncover ? new fen_map_t : NULL;
+  unseen_map_t *fens_with_unseen = uncover ? new unseen_map_t : NULL;
 
   std::cout << "Opening DB" << std::endl;
   std::uintptr_t handle = cdbdirect_initialize(CHESSDB_PATH);
@@ -552,7 +588,7 @@ int main(int argc, char const *argv[]) {
       if (count) {
         std::cout << ", " << count << " ("
                   << int(count * 100 / total_assigned + 0.5) << "%) have "
-                  << sumValues(*fens_with_unseen) << " unseen edges";
+                  << count_unseen_edges(*fens_with_unseen) << " unseen edges";
       }
     }
     std::cout << std::endl;
@@ -567,7 +603,7 @@ int main(int argc, char const *argv[]) {
       std::stringstream ss;
       std::cout.rdbuf(ss.rdbuf());
       fen = board.getFen(false);
-      fen_map_t *local_fens_with_unseen = uncover ? new fen_map_t : NULL;
+      unseen_map_t *local_fens_with_unseen = uncover ? new unseen_map_t : NULL;
       size_t total_assigned =
           cdbsubtree(handle, fen, depth, maxCPLoss, local_fens_with_unseen,
                      strict_subtree);
@@ -579,7 +615,7 @@ int main(int argc, char const *argv[]) {
         if (count) {
           std::cout << ", " << count << " ("
                     << int(count * 100 / total_assigned + 0.5) << "%) have "
-                    << sumValues(*local_fens_with_unseen) << " unseen edges";
+                    << count_unseen_edges(*local_fens_with_unseen) << " unseen edges";
           // store the newly found nodes in the global hash map
           for (const auto &pair : *local_fens_with_unseen)
             (*fens_with_unseen)[pair.first] = pair.second;
@@ -597,12 +633,20 @@ int main(int argc, char const *argv[]) {
     for (const auto &pair : *fens_with_unseen) {
       auto board = Board::Compact::decode(pair.first);
       std::string fen = board.getFen(false);
-      ufile << fen << " c0 \"unseen moves: " << pair.second << "\";\n";
+      std::stringstream ss;
+      ss << fen
+         << " c0 \"unseen moves: " << static_cast<int>(std::get<0>(pair.second))
+         << ", eval (gap): " << std::get<1>(pair.second) << " (" << std::showpos
+         << std::get<2>(pair.second) << ")\";\n";
+      ufile << ss.str();
     }
     ufile.close();
     std::cout << "Saved " << fens_with_unseen->size()
-              << " positions with a total of " << sumValues(*fens_with_unseen)
+              << " positions with a total of " << count_unseen_edges(*fens_with_unseen)
               << " unseen edges in unseen.epd." << std::endl;
+    auto improved = count_unseen_improved(*fens_with_unseen);
+    if (improved)
+      std::cout << "For " << improved << " of these positions, an unseen edge would be a new best move." << std::endl;
   }
 
   std::cout << "Closing DB" << std::endl;
